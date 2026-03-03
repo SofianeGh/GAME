@@ -1,4 +1,4 @@
-# GAME Platforme 
+# GAME 
 Cahier des charges 
 
 -Jeux platformer 2D type céleste /hollow knight 
