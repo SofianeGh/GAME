@@ -1,206 +1,341 @@
 // ============================================================
-//  Mini Platformer - SDL2
-//  Compilation :
-//    Linux/macOS : g++ main.cpp -o platformer $(sdl2-config --cflags --libs)
-//    Windows     : g++ main.cpp -o platformer -lSDL2main -lSDL2
+//  GAME — Platformer  (SDL2, C++17)
+//  Compilation : make   (voir Makefile)
+//  Contrôles   : WASD / flèches  →  déplacement + saut
+//                SHIFT ou X      →  dash
+//                Échap           →  menu / quitter
 // ============================================================
 
 #include <SDL2/SDL.h>
+#include "common.hpp"
+#include "level.hpp"
+#include "player.hpp"
+#include "hud.hpp"
 #include <vector>
+#include <cmath>
 
-// ── Constantes fenêtre ────────────────────────────────────────
-constexpr int   SCREEN_W   = 800;
-constexpr int   SCREEN_H   = 500;
-constexpr int   FPS        = 60;
-constexpr float DELTA      = 1.0f / FPS;
-
-// ── Physique ──────────────────────────────────────────────────
-constexpr float GRAVITY      = 1400.0f;   // px/s²
-constexpr float JUMP_FORCE   = -520.0f;   // px/s  (négatif = vers le haut)
-constexpr float MOVE_SPEED   = 220.0f;    // px/s
-constexpr float MAX_FALL_VEL = 900.0f;    // px/s
+// ── États du jeu ─────────────────────────────────────────────
+enum class GameState { MENU, PLAYING, DEAD, WIN };
 
 // ─────────────────────────────────────────────────────────────
-struct Rect { float x, y, w, h; };
-
-// Retourne true si deux rectangles se chevauchent
-bool overlaps(const Rect& a, const Rect& b)
+//  Dessin du niveau (plateformes, piques, checkpoints, sortie)
+// ─────────────────────────────────────────────────────────────
+static void drawPlatform(SDL_Renderer* r, const FRect& p,
+                         SDL_Color top, SDL_Color body)
 {
-    return a.x < b.x + b.w && a.x + a.w > b.x &&
-           a.y < b.y + b.h && a.y + a.h > b.y;
+    drawFilled(r, p, body);
+    drawFilled(r, {p.x, p.y, p.w, 6.f}, top);   // bandeau du dessus
+}
+player.init(100.f, 200.f);
+player.loadTexture(renderer, "assets/char_32x32.png");  // ✅ ici renderer est connu
+static void drawSpike(SDL_Renderer* r, const FRect& s)
+{
+    // Triangles rouges répétés sur toute la largeur
+    int n = (int)(s.w / 12.f);
+    SDL_SetRenderDrawColor(r, 200, 50, 50, 255);
+    for (int i = 0; i < n; i++) {
+        float bx = s.x + i * 12.f;
+        float by = s.y + s.h;
+        float tx = bx + 6.f, ty = s.y;
+        SDL_RenderDrawLine(r, (int)bx, (int)by, (int)tx, (int)ty);
+        SDL_RenderDrawLine(r, (int)tx, (int)ty, (int)(bx+12), (int)by);
+        SDL_RenderDrawLine(r, (int)bx, (int)by, (int)(bx+12), (int)by);
+        // Remplissage simplifié (2 lignes diagonales internes)
+        SDL_SetRenderDrawColor(r, 160, 40, 40, 255);
+        SDL_RenderDrawLine(r, (int)(bx+3),(int)by, (int)tx,(int)(ty+4));
+        SDL_RenderDrawLine(r, (int)(bx+9),(int)by, (int)tx,(int)(ty+4));
+        SDL_SetRenderDrawColor(r, 200, 50, 50, 255);
+    }
 }
 
-// ── Joueur ────────────────────────────────────────────────────
-struct Player {
-    Rect  rect  = {100.f, 200.f, 36.f, 48.f};
-    float vx    = 0.f;
-    float vy    = 0.f;
-    bool  onGround = false;
-
-    void handleInput(const Uint8* keys)
-    {
-        vx = 0.f;
-        if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) vx = -MOVE_SPEED;
-        if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) vx =  MOVE_SPEED;
-
-        if ((keys[SDL_SCANCODE_SPACE] || keys[SDL_SCANCODE_UP] || keys[SDL_SCANCODE_W])
-            && onGround)
-        {
-            vy = JUMP_FORCE;
-            onGround = false;
-        }
-    }
-
-    void update(float dt, const std::vector<Rect>& platforms)
-    {
-        // ── Appliquer la gravité ──────────────────────────────
-        vy += GRAVITY * dt;
-        if (vy > MAX_FALL_VEL) vy = MAX_FALL_VEL;
-
-        // ── Déplacement horizontal puis collision ─────────────
-        rect.x += vx * dt;
-        for (const auto& p : platforms)
-        {
-            if (overlaps(rect, p))
-            {
-                if (vx > 0) rect.x = p.x - rect.w;
-                else        rect.x = p.x + p.w;
-                vx = 0.f;
-            }
-        }
-
-        // ── Déplacement vertical puis collision ───────────────
-        onGround = false;
-        rect.y += vy * dt;
-        for (const auto& p : platforms)
-        {
-            if (overlaps(rect, p))
-            {
-                if (vy > 0)          // chute → on pose le perso
-                {
-                    rect.y   = p.y - rect.h;
-                    onGround = true;
-                }
-                else                 // montée → rebond plafond
-                {
-                    rect.y = p.y + p.h;
-                }
-                vy = 0.f;
-            }
-        }
-
-        // ── Bornes de l'écran (gauche/droite) ─────────────────
-        if (rect.x < 0)                 rect.x = 0;
-        if (rect.x + rect.w > SCREEN_W) rect.x = SCREEN_W - rect.w;
-
-        // ── Respawn si on tombe en-dessous de l'écran ─────────
-        if (rect.y > SCREEN_H + 100)
-        {
-            rect.x = 100.f;
-            rect.y = 200.f;
-            vy     = 0.f;
-        }
-    }
-
-    void draw(SDL_Renderer* renderer) const
-    {
-        int x = (int)rect.x, y = (int)rect.y;
-        int w = (int)rect.w, h = (int)rect.h;
-
-        // Corps bleu
-        SDL_SetRenderDrawColor(renderer, 130, 130, 220, 255);
-        SDL_Rect body = {x, y, w, h};
-        SDL_RenderFillRect(renderer, &body);
-
-        // Contour
-        SDL_SetRenderDrawColor(renderer, 30, 60, 140, 255);
-        SDL_RenderDrawRect(renderer, &body);
-    }
-};
-
-// ── Dessin d'une plateforme avec bord coloré ──────────────────
-void drawPlatform(SDL_Renderer* r, const Rect& p,
-                  SDL_Color top, SDL_Color body)
+static void drawCheckpoint(SDL_Renderer* r, const Checkpoint& c)
 {
-    SDL_SetRenderDrawColor(r, body.r, body.g, body.b, body.a);
-    SDL_Rect rect = {(int)p.x, (int)p.y, (int)p.w, (int)p.h};
-    SDL_RenderFillRect(r, &rect);
-
-    SDL_SetRenderDrawColor(r, top.r, top.g, top.b, top.a);
-    SDL_Rect topLine = {(int)p.x, (int)p.y, (int)p.w, 6};
-    SDL_RenderFillRect(r, &topLine);
+    // Poteau
+    drawFilled(r, {c.rect.x + 7.f, c.rect.y, 5.f, c.rect.h},
+               {100, 70, 35, 255});
+    // Drapeau (gris si non activé, doré si activé)
+    SDL_Color flag = c.active ? SDL_Color{255, 200, 40, 255}
+                              : SDL_Color{100, 100, 100, 255};
+    drawFilled(r, {c.rect.x + 12.f, c.rect.y, 15.f, 12.f}, flag);
+    if (c.active) {
+        // Étoile/reflet sur le drapeau activé
+        SDL_SetRenderDrawColor(r, 255, 255, 150, 255);
+        SDL_Rect shine = {(int)c.rect.x+14, (int)c.rect.y+2, 5, 4};
+        SDL_RenderFillRect(r, &shine);
+    }
 }
 
-// ── Point d'entrée ────────────────────────────────────────────
-int main(int /*argc*/, char* /*argv*/[])
+static void drawExit(SDL_Renderer* r, const LevelExit& e, float t)
 {
-    if (SDL_Init(SDL_INIT_VIDEO) != 0)
-    {
+    // Porte dorée
+    drawFilled(r, e.rect, {180, 130, 50, 255});
+    drawOutline(r, e.rect, {240, 180, 60, 255});
+    // Poignée
+    drawFilled(r, {e.rect.x + e.rect.w - 8.f, e.rect.y + e.rect.h/2 - 3.f, 5.f, 6.f},
+               {255, 215, 0, 255});
+    // Étoile pulsante au-dessus
+    float pulse = 0.7f + 0.3f * std::sin(t * 4.f);
+    int sz = (int)(16 * pulse);
+    int sx = (int)(e.rect.x + e.rect.w/2 - sz/2);
+    int sy = (int)(e.rect.y - sz - 6);
+    SDL_SetRenderDrawColor(r, 255, 220, 50, 255);
+    SDL_Rect star = {sx, sy, sz, sz}; SDL_RenderFillRect(r, &star);
+}
+
+static void drawLevel(SDL_Renderer* r, const Level& lv, float t)
+{
+    SDL_Color groundTop  = lv.groundColor;
+    SDL_Color groundBody = {(Uint8)(lv.groundColor.r*3/4),
+                            (Uint8)(lv.groundColor.g*3/4),
+                            (Uint8)(lv.groundColor.b*3/4), 255};
+    SDL_Color platTop  = lv.platColor;
+    SDL_Color platBody = {(Uint8)(lv.platColor.r*3/4),
+                          (Uint8)(lv.platColor.g*3/4),
+                          (Uint8)(lv.platColor.b*3/4), 255};
+
+    for (auto& p : lv.platforms) {
+        if (p.isGround) drawPlatform(r, p.rect, groundTop, groundBody);
+        else            drawPlatform(r, p.rect, platTop,   platBody);
+    }
+    for (auto& s : lv.spikes)      drawSpike(r, s.rect);
+    for (auto& c : lv.checkpoints) drawCheckpoint(r, c);
+    drawExit(r, lv.exit, t);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Écrans de state
+// ─────────────────────────────────────────────────────────────
+static void drawMenuScreen(SDL_Renderer* r, float t)
+{
+    SDL_SetRenderDrawColor(r, 12, 8, 28, 255);
+    SDL_RenderClear(r);
+
+    // Titre (gros bloc stylisé)
+    SDL_SetRenderDrawColor(r, 70, 130, 220, 255);
+    SDL_Rect title = {200, 100, 400, 90}; SDL_RenderFillRect(r, &title);
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+    SDL_RenderDrawRect(r, &title);
+
+    // Lettre "G" pixel-art dans le titre
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+    SDL_Rect g1={230,120,40,10}, g2={220,120,10,50}, g3={230,155,50,10},
+             g4={270,140,10,25}, g5={240,140,30,5};
+    SDL_RenderFillRect(r,&g1); SDL_RenderFillRect(r,&g2);
+    SDL_RenderFillRect(r,&g3); SDL_RenderFillRect(r,&g4);
+    SDL_RenderFillRect(r,&g5);
+
+    // Bouton "ENTER" qui pulse
+    float p = 0.5f + 0.5f * std::sin(t * 3.f);
+    SDL_SetRenderDrawColor(r, (Uint8)(100*p), (Uint8)(180*p), (Uint8)(255*p), 255);
+    SDL_Rect btn = {300, 240, 200, 36}; SDL_RenderFillRect(r, &btn);
+    SDL_SetRenderDrawColor(r, 200, 200, 200, 255);
+    SDL_RenderDrawRect(r, &btn);
+
+    // Légende contrôles (petits blocs)
+    SDL_SetRenderDrawColor(r, 50, 50, 50, 255);
+    SDL_Rect leg = {240, 310, 320, 130}; SDL_RenderFillRect(r, &leg);
+    SDL_SetRenderDrawColor(r, 80, 80, 80, 255);
+    SDL_RenderDrawRect(r, &leg);
+
+    // Icônes WASD
+    int kx[] = {268, 298, 328, 358};
+    for (int i=0; i<4; i++) {
+        SDL_SetRenderDrawColor(r, 90, 90, 130, 255);
+        SDL_Rect key = {kx[i], 325, 24, 24}; SDL_RenderFillRect(r, &key);
+        SDL_SetRenderDrawColor(r, 150, 150, 200, 255);
+        SDL_RenderDrawRect(r, &key);
+    }
+    // Icône SHIFT (dash)
+    SDL_SetRenderDrawColor(r, 60, 180, 255, 255);
+    SDL_Rect shift = {268, 360, 80, 24}; SDL_RenderFillRect(r, &shift);
+    SDL_SetRenderDrawColor(r, 100, 200, 255, 255);
+    SDL_RenderDrawRect(r, &shift);
+
+    // Petit perso dans le menu
+    SDL_SetRenderDrawColor(r, 70, 130, 220, 255);
+    SDL_Rect hero = {384, 320, 30, 40}; SDL_RenderFillRect(r, &hero);
+    SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+    SDL_Rect eye1 = {389, 328, 6, 7}, eye2 = {401, 328, 6, 7};
+    SDL_RenderFillRect(r, &eye1); SDL_RenderFillRect(r, &eye2);
+}
+
+static void drawDeadOverlay(SDL_Renderer* r, float timer)
+{
+    // Assombrissement rouge
+    SDL_SetRenderDrawColor(r, 140, 0, 0, 170);
+    SDL_Rect ov = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(r, &ov);
+
+    // Grande croix rouge
+    SDL_SetRenderDrawColor(r, 255, 40, 40, 255);
+    SDL_Rect v = {385, 150, 30, 170}, h = {295, 200, 210, 40};
+    SDL_RenderFillRect(r, &v); SDL_RenderFillRect(r, &h);
+
+    // Hint "press R" une fois le timer écoulé
+    if (timer <= 0.f) {
+        float p = 0.5f + 0.5f * std::sin(timer * -8.f);
+        SDL_SetRenderDrawColor(r, (Uint8)(180*p), (Uint8)(180*p), (Uint8)(180*p), 255);
+        SDL_Rect hint = {310, 370, 180, 32}; SDL_RenderFillRect(r, &hint);
+        SDL_SetRenderDrawColor(r, 255, 255, 255, 255);
+        SDL_RenderDrawRect(r, &hint);
+    }
+}
+
+static void drawWinScreen(SDL_Renderer* r, float t)
+{
+    SDL_SetRenderDrawColor(r, 0, 80, 0, 190);
+    SDL_Rect ov = {0, 0, SCREEN_W, SCREEN_H}; SDL_RenderFillRect(r, &ov);
+
+    // Étoiles qui tournent (simulation avec rectangles)
+    for (int i = 0; i < 8; i++) {
+        float angle = t * 1.5f + i * 3.14159f / 4.f;
+        int ex = (int)(400 + 120 * std::cos(angle));
+        int ey = (int)(200 + 80  * std::sin(angle));
+        SDL_SetRenderDrawColor(r, 255, 220, 50, 255);
+        SDL_Rect star = {ex-8, ey-8, 16, 16}; SDL_RenderFillRect(r, &star);
+    }
+
+    // Trophée central
+    SDL_SetRenderDrawColor(r, 255, 200, 40, 255);
+    SDL_Rect cup1 = {350, 160, 100, 80};
+    SDL_Rect cup2 = {370, 240,  60, 20};
+    SDL_Rect cup3 = {340, 258,  80, 14};
+    SDL_RenderFillRect(r, &cup1);
+    SDL_RenderFillRect(r, &cup2);
+    SDL_RenderFillRect(r, &cup3);
+
+    // "Press ENTER" pour revenir au menu
+    float p = 0.5f + 0.5f * std::sin(t * 3.f);
+    SDL_SetRenderDrawColor(r, (Uint8)(100*p), (Uint8)(200*p), (Uint8)(100*p), 255);
+    SDL_Rect btn = {290, 360, 220, 34}; SDL_RenderFillRect(r, &btn);
+}
+
+// ─────────────────────────────────────────────────────────────
+//  Point d'entrée
+// ─────────────────────────────────────────────────────────────
+int main(int, char*[])
+{
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         SDL_Log("SDL_Init Error: %s", SDL_GetError());
         return 1;
     }
 
-    SDL_Window* window = SDL_CreateWindow(
-        "Mini Platformer  —  ZQSD / fleches + ESPACE pour sauter",
+    SDL_Window* win = SDL_CreateWindow(
+        "GAME — Platformer  (WASD + SHIFT=dash)",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         SCREEN_W, SCREEN_H, SDL_WINDOW_SHOWN);
 
-    SDL_Renderer* renderer = SDL_CreateRenderer(
-        window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    SDL_Renderer* rnd = SDL_CreateRenderer(
+        win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    SDL_SetRenderDrawBlendMode(rnd, SDL_BLENDMODE_BLEND);
 
-    // ── Liste des plateformes  {x, y, largeur, hauteur} ───────
-    std::vector<Rect> platforms = {
-        // Sol
-        {  0.f, 460.f, 800.f, 40.f},
-        // Plateformes flottantes
-        { 80.f, 400.f, 130.f, 10.f},
-
-    };
-
-    SDL_Color grassGreen = { 80, 160,  50, 255};
-    SDL_Color dirtBrown  = {120,  80,  40, 255};
-    SDL_Color floatTop   = { 60, 200, 100, 255};
-    SDL_Color floatBody  = { 90, 130,  60, 255};
-
+    // ── Chargement des niveaux ────────────────────────────────
+    auto levels  = buildLevels();
+    int  lvIdx   = 0;
     Player player;
-    bool running = true;
-    SDL_Event event;
+    player.init(levels[0].startX, levels[0].startY);
 
-    // ── Boucle principale ─────────────────────────────────────
+    GameState state     = GameState::MENU;
+    float     deadTimer = 1.5f;   // délai avant d'afficher "press R"
+    float     timeAcc   = 0.f;    // temps global pour animations
+
+    bool running = true;
+    SDL_Event ev;
+
     while (running)
     {
-        // Événements
-        while (SDL_PollEvent(&event))
+        bool jumpPressed = false, dashPressed = false;
+
+        // ── Événements ────────────────────────────────────────
+        while (SDL_PollEvent(&ev))
         {
-            if (event.type == SDL_QUIT) running = false;
-            if (event.type == SDL_KEYDOWN &&
-                event.key.keysym.sym == SDLK_ESCAPE) running = false;
+            if (ev.type == SDL_QUIT) { running = false; break; }
+
+            if (ev.type == SDL_KEYDOWN)
+            {
+                auto k = ev.key.keysym.sym;
+
+                if (k == SDLK_ESCAPE) {
+                    if (state == GameState::PLAYING) state = GameState::MENU;
+                    else running = false;
+                }
+
+                if (state == GameState::MENU && k == SDLK_RETURN) {
+                    lvIdx = 0;
+                    for (auto& c : levels[lvIdx].checkpoints) c.active = false;
+                    player.init(levels[lvIdx].startX, levels[lvIdx].startY);
+                    state = GameState::PLAYING;
+                }
+
+                if (state == GameState::DEAD && deadTimer <= 0.f && k == SDLK_r) {
+                    player.respawn();
+                    state = GameState::PLAYING;
+                }
+
+                if (state == GameState::WIN && k == SDLK_RETURN)
+                    state = GameState::MENU;
+
+                if (state == GameState::PLAYING) {
+                    if (k == SDLK_SPACE || k == SDLK_w || k == SDLK_UP)
+                        jumpPressed = true;
+                    if (k == SDLK_LSHIFT || k == SDLK_x)
+                        dashPressed = true;
+                }
+            }
         }
 
-        const Uint8* keys = SDL_GetKeyboardState(nullptr);
-        player.handleInput(keys);
-        player.update(DELTA, platforms);
+        timeAcc += DELTA;
+        Level& lv = levels[lvIdx];
 
-        // ── Fond ciel bleu ────────────────────────────────────
-        SDL_SetRenderDrawColor(renderer, 0, 0, 0, 0);
-        SDL_RenderClear(renderer);
-
-
-        // Plateformes
-        for (size_t i = 0; i < platforms.size(); ++i)
+        // ── Mise à jour ───────────────────────────────────────
+        if (state == GameState::PLAYING)
         {
-            if (i == 0) drawPlatform(renderer, platforms[i], grassGreen, dirtBrown);
-            else        drawPlatform(renderer, platforms[i], floatTop,   floatBody);
+            const Uint8* keys = SDL_GetKeyboardState(nullptr);
+            player.handleInput(keys, jumpPressed, dashPressed);
+            player.update(DELTA, lv);
+
+            // Sortie de niveau
+            if (overlaps(player.rect, lv.exit.rect))
+            {
+                lvIdx++;
+                if (lvIdx >= (int)levels.size()) {
+                    state = GameState::WIN;
+                } else {
+                    for (auto& c : levels[lvIdx].checkpoints) c.active = false;
+                    player.init(levels[lvIdx].startX, levels[lvIdx].startY);
+                }
+            }
+
+            if (player.isDead()) {
+                state     = GameState::DEAD;
+                deadTimer = 1.5f;
+            }
         }
 
-        // Joueur
-        player.draw(renderer);
+        if (state == GameState::DEAD)
+            deadTimer -= DELTA;
 
-        SDL_RenderPresent(renderer);
+        // ── Rendu ─────────────────────────────────────────────
+        if (state == GameState::MENU) {
+            drawMenuScreen(rnd, timeAcc);
+        }
+        else {
+            // Fond
+            SDL_SetRenderDrawColor(rnd, lv.bgColor.r, lv.bgColor.g, lv.bgColor.b, 255);
+            SDL_RenderClear(rnd);
+
+            drawLevel(rnd, lv, timeAcc);
+            player.draw(rnd);
+            drawHUD(rnd, player, lvIdx, (int)levels.size());
+
+            if (state == GameState::DEAD) drawDeadOverlay(rnd, deadTimer);
+            if (state == GameState::WIN)  drawWinScreen(rnd, timeAcc);
+        }
+
+        SDL_RenderPresent(rnd);
     }
 
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    SDL_DestroyRenderer(rnd);
+    SDL_DestroyWindow(win);
     SDL_Quit();
     return 0;
 }
