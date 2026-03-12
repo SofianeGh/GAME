@@ -5,7 +5,7 @@ std::vector<Level> buildLevels()
     std::vector<Level> levels;
 
     // ─────────────────────────────────────────────────────────
-    // NIVEAU 1 : Les Plaines  (tutoriel doux, ciel bleu)
+    // NIVEAU 1 : Les Plainess  (tutoriel doux, ciel bleu)
     // Objectif : apprendre le saut et le dash
     // ─────────────────────────────────────────────────────────
     {
