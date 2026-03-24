@@ -1,7 +1,7 @@
 #pragma once
 
-constexpr int   SCREEN_W   = 1800;
-constexpr int   SCREEN_H   = 1500;
+constexpr int   SCREEN_W   = 800;
+constexpr int   SCREEN_H   = 500;
 constexpr int   FPS        = 60;
 constexpr float DELTA      = 1.0f / FPS;
 
